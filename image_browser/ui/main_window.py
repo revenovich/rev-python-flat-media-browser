@@ -15,12 +15,6 @@ from ..core.scan import discover_images, process_images
 from ..core.phash import HAS_DCT  # to adjust UI options
 from .widgets import open_gallery_popup
 
-# Import VideoPanel from widgets if it exists there
-try:
-    from .video_player import VideoPanel
-except ImportError:
-    VideoPanel = None  # Or define a dummy class if needed
-
 try:
     from PIL import Image, ImageTk, ImageFile
     ImageFile.LOAD_TRUNCATED_IMAGES = True
@@ -55,8 +49,6 @@ class MainWindow(tk.Tk):
         self._build_ui()
         self.after(100, self._poll_queue)
 
-        self.protocol("WM_DELETE_WINDOW", self._on_app_close)
-
         if Image is None or ImageTk is None:
             messagebox.showwarning("Missing dependency","This app needs Pillow:\n\npip install pillow")
 
@@ -89,35 +81,6 @@ class MainWindow(tk.Tk):
         manage_tab = ttk.Frame(tabs)
         tabs.add(browser_tab, text='Image Browser')
         tabs.add(manage_tab, text='Manage')
-        # --- Video Browser tab ---
-        video_tab = ttk.Frame(tabs)
-        tabs.add(video_tab, text='Video Browser')
-        self.tabs.bind("<<NotebookTabChanged>>", self._on_tab_changed)
-
-        video_left = ttk.Frame(video_tab)
-        video_right = ttk.Frame(video_tab)
-        video_left.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        video_right.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
-        video_right.update_idletasks()
-        self.bind("<Configure>", lambda e: self._limit_video_width(video_right))
-        ttk.Button(video_left, text="Scan Videos", command=self._refresh_video_list).pack(anchor='w', pady=(0,4))
-
-        ttk.Label(video_left, text='Videos:').pack(anchor='w')
-        self.video_list = tk.Listbox(video_left, activestyle='dotbox')
-        self.video_scroll = ttk.Scrollbar(video_left, orient=tk.VERTICAL, command=self.video_list.yview)
-        self.video_list.configure(yscrollcommand=self.video_scroll.set)
-        self.video_list.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0,4), pady=(2,6))
-        self.video_scroll.pack(side=tk.RIGHT, fill=tk.Y, pady=(2,6))
-
-        ttk.Label(video_right, text='Preview:').pack(anchor='w')
-        self.video_player = VideoPanel(video_right)
-        self.video_player.pack(fill=tk.BOTH, expand=True)
-
-        self.video_list.bind('<<ListboxSelect>>', self._on_video_select)      # load only
-        self.video_list.bind('<Double-Button-1>', self._on_video_play)        # double left = play
-        self.video_list.bind('<Double-Button-3>', self._on_video_open_loc)    # double right = open location
-        self.video_list.bind('<Return>', self._on_video_play)                  # Enter = play
-
         # ---- Browser layout ----
         main = ttk.Panedwindow(browser_tab, orient=tk.HORIZONTAL)
         main.pack(fill=tk.BOTH, expand=True)
@@ -732,96 +695,3 @@ class MainWindow(tk.Tk):
     def _load_thumb_bytes(self, path: Path, size: Tuple[int, int]) -> bytes:
         from ..core.preview import make_thumbnail_png_bytes
         return make_thumbnail_png_bytes(path, size)
-
-
-    # ---- Video Browser helpers ----
-    def _video_extensions(self):
-        return {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.m4v'}
-
-    def _scan_videos_in_folder(self, root_folder: Path):
-        import os
-        out = []
-        for r, dnames, fnames in os.walk(root_folder):
-            for f in fnames:
-                ext = os.path.splitext(f)[1].lower()
-                if ext in self._video_extensions():
-                    out.append(str(Path(r) / f))
-        return out
-
-    def _refresh_video_list(self):
-        self.video_list.delete(0, tk.END)
-        self._video_idx_to_path = {}
-        root_folder = self.source_dir
-        if not root_folder:
-            return
-        paths = self._scan_videos_in_folder(Path(root_folder))
-        for i, p in enumerate(paths):
-            self.video_list.insert(tk.END, Path(p).name)
-            self._video_idx_to_path[i] = p
-        try:
-            self.manage_status.config(text=f"Video Browser: {len(paths)} file(s) found.")
-        except Exception:
-            pass
-
-    def _on_video_select(self, event=None):
-        sel = self.video_list.curselection()
-        if not sel: return
-        idx = sel[0]
-        p = self._video_idx_to_path.get(idx)
-        if not p: return
-        # Lazy: only records path, no decoder started
-        from pathlib import Path as _P
-        self.video_player.load(_P(p))
-
-    def _on_video_play(self, event=None):
-        # Ensure current selection is loaded, then Play
-        sel = self.video_list.curselection()
-        if not sel: return
-        idx = sel[0]
-        p = self._video_idx_to_path.get(idx)
-        if not p: return
-        from pathlib import Path as _P
-        self.video_player.load(_P(p))   # safe even if already loaded
-        self.video_player.play()
-
-    def _on_video_open_loc(self, event=None):
-        sel = self.video_list.curselection()
-        if not sel: return
-        idx = self.video_list.curselection()[0]
-        p = self._video_idx_to_path.get(idx)
-        if not p: return
-        import subprocess, os, sys
-        if os.name == 'nt':
-            subprocess.Popen(['explorer', '/select,', str(p)])
-        elif sys.platform.startswith('darwin'):
-            subprocess.Popen(['open', '-R', str(p)])
-        else:
-            from pathlib import Path as _P
-            subprocess.Popen(['xdg-open', str(_P(p).parent)])
-
-    def _limit_video_width(self, widget):
-        total_w = self.winfo_width() or widget.winfo_width()
-        max_w = int(total_w * 0.6)
-        try:
-            widget.update_idletasks()
-            cur_w = widget.winfo_width()
-            if cur_w > max_w:
-                widget.config(width=max_w)
-        except Exception:
-            pass
-
-    def _on_tab_changed(self, event=None):
-        try:
-            tab_text = event.widget.tab(event.widget.select(), "text")
-            if tab_text == "Video Browser":
-                self._refresh_video_list()
-        except Exception:
-            pass
-
-    def _on_app_close(self):
-        try:
-            if getattr(self, "video_player", None):
-                self.video_player.shutdown()
-        except Exception:
-            pass
-        self.destroy()
