@@ -208,3 +208,5 @@ __marimo__/
 
 # Local large data files
 libmpv-2.dll
+
+.vscode/
