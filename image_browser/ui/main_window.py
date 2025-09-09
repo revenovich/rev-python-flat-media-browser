@@ -294,26 +294,38 @@ class MainWindow(tk.Tk):
         if not paths:
             self.manage_status.config(text="Nothing selected.")
             return
-        copied = 0
-        moved = 0
-        for p in paths:
-            src = Path(p)
-            if not src.exists():
-                continue
-            dst = target / src.name
-            try:
+
+        self.manage_status.config(text=("Moving files..." if move else "Copying files..."))
+
+        def worker():
+            copied = 0
+            moved = 0
+            for p in paths:
+                if self.cancel_event.is_set():
+                    break
+                src = Path(p)
+                if not src.exists():
+                    continue
+                dst = target / src.name
+                try:
+                    if move:
+                        shutil.move(str(src), str(dst))
+                        moved += 1
+                    else:
+                        shutil.copy2(str(src), str(dst))
+                        copied += 1
+                except Exception:
+                    pass
+
+            def done():
                 if move:
-                    shutil.move(str(src), str(dst))
-                    moved += 1
+                    self.manage_status.config(text=f"Moved {moved} files → {target}")
                 else:
-                    shutil.copy2(str(src), str(dst))
-                    copied += 1
-            except Exception:
-                pass
-        if move:
-            self.manage_status.config(text=f"Moved {moved} files → {target}")
-        else:
-            self.manage_status.config(text=f"Copied {copied} files → {target}")
+                    self.manage_status.config(text=f"Copied {copied} files → {target}")
+
+            self.after(0, done)
+
+        threading.Thread(target=worker, daemon=True).start()
 
     # --- Events ---
     def on_pick_folder(self):
@@ -393,16 +405,31 @@ class MainWindow(tk.Tk):
 
     def _scan_worker(self):
         root = self.source_dir
-        new_paths = list(discover_images(root, self.loaded_paths_set, cancel_event=self.cancel_event))
-        total = len(new_paths) + len(self.loaded_paths_set)
-        self.total_images = max(total, self.items_count)
-        self.q.put({"type":"total","n":self.total_images})
-        if self.cancel_event.is_set() or not new_paths:
-            self.q.put({"type":"cancelled" if self.cancel_event.is_set() else "done"})
-            return
-        process_images(root, new_paths, self.var_manifest.get(), self.var_hash.get(),
-                       self.var_threads.get(), self.q, self.loaded_paths_set, cancel_event=self.cancel_event)
-        self.q.put({"type":"cancelled" if self.cancel_event.is_set() else "done"})
+        # start with already indexed items
+        self.total_images = len(self.loaded_paths_set)
+        self.q.put({"type": "total", "n": self.total_images})
+
+        def path_iter():
+            for p in discover_images(root, self.loaded_paths_set, cancel_event=self.cancel_event):
+                if self.cancel_event.is_set():
+                    break
+                self.total_images += 1
+                # update total as we discover more files
+                self.q.put({"type": "total", "n": self.total_images})
+                yield p
+
+        process_images(
+            root,
+            path_iter(),
+            self.var_manifest.get(),
+            self.var_hash.get(),
+            self.var_threads.get(),
+            self.q,
+            self.loaded_paths_set,
+            cancel_event=self.cancel_event,
+        )
+
+        self.q.put({"type": "cancelled" if self.cancel_event.is_set() else "done"})
 
     def _rebuild_worker(self):
         # full rescan and rewrite manifest; then reload manifest into UI
